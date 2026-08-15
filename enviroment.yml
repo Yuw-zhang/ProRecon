@@ -1,0 +1,13 @@
+name: PCa_reconstruct
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy
+  - pillow
+  - scipy
+  - pip
+  - pip:
+    - streamlit
+    - opencv-contrib-python
