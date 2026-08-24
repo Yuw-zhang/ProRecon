@@ -3,6 +3,7 @@ from PIL import Image
 import numpy as np
 import cv2
 import os
+import io
 
 def flip_image(uploaded_file, flip_h, flip_v):
     if uploaded_file is None:
@@ -290,13 +291,11 @@ if img_tl and img_bl and img_br and img_tr:
             ch, cw = slide_canvas.shape[:2]
             cx, cy = cw // 2, ch // 2
 
-            # 自动生成四分块交界处的 4 个边框角点 + 4 个中心边缘控制点
             src_pts = [
-                [0, 0], [cw, 0], [0, ch], [cw, ch],              # 4个图像外边界锚点
-                [cx, cy - 100], [cx, cy + 100], [cx - 100, cy], [cx + 100, cy] # 4分块相交边缘控制点
+                [0, 0], [cw, 0], [0, ch], [cw, ch],       
+                [cx, cy - 100], [cx, cy + 100], [cx - 100, cy], [cx + 100, cy] 
             ]
             
-            # 根据 tps_strength 向内或向外收缩缝合
             dst_pts = [
                 [0, 0], [cw, 0], [0, ch], [cw, ch],
                 [cx, cy - 100 + tps_strength], 
@@ -311,6 +310,20 @@ if img_tl and img_bl and img_br and img_tr:
             st.markdown('<div style="height: 400px;"></div>', unsafe_allow_html=True)
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
+
+            ############------save high resolution image---------##########
+            canvas_pil = Image.fromarray(slide_canvas)
+            buf = io.BytesIO()
+            canvas_pil.save(buf,  format="PNG")
+            byte_im = buf.getvalue()
+
+            st.download_button(
+                label = 'Download PNG',
+                data = byte_im,
+                file_name = 'reconstructed.png'
+                mime = 'image/png',
+                type = 'primary'
+            )
     else:
         with col_img:
             st.info("Please upload maps and click \'Start\'")
