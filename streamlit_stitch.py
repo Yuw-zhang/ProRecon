@@ -320,7 +320,7 @@ if img_tl and img_bl and img_br and img_tr:
             st.download_button(
                 label = 'Download PNG',
                 data = byte_im,
-                file_name = 'reconstructed.png'
+                file_name = 'reconstructed.png',
                 mime = 'image/png',
                 type = 'primary'
             )
