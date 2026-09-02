@@ -198,10 +198,10 @@ if img_tl and img_bl and img_br and img_tr:
         centroid4 = get_centroid(msk4)
 
         # get the bbox rect info
-        angle1, h1, w1 = get_rectInfo(msk1)
-        angle2, h2, w2 = get_rectInfo(msk2)
-        angle3, h3, w3 = get_rectInfo(msk3)
-        angle4, h4, w4 = get_rectInfo(msk4)
+        h1, w1 = im1.shape[:2]
+        h2, w2 = im2.shape[:2]
+        h3, w3 = im3.shape[:2]
+        h4, w4 = im4.shape[:2]
 
         info_dict[1] = {
             'mask': msk1,
@@ -259,10 +259,10 @@ if img_tl and img_bl and img_br and img_tr:
         offset_y_bottom = int((bottom_width / 2.0) * gap_factor)
 
         quadrant_targets = {
-            1: (canvas_center_x - offset_x_left + dx1, canvas_center_y - offset_y_top + dy1),
-            2: (canvas_center_x - offset_x_left + dx2, canvas_center_y + offset_y_bottom + dy2),
-            3: (canvas_center_x + offset_x_right + dx3, canvas_center_y - offset_y_top + dy3),
-            4: (canvas_center_x + offset_x_right + dx4, canvas_center_y + offset_y_bottom + dy4)
+            1: (canvas_center_x - w1 // 2 + dx1, canvas_center_y - h1 // 2 + dy1),
+            2: (canvas_center_x - w2 // 2 + dx2, canvas_center_y + h2 // 2 + dy2),
+            3: (canvas_center_x + w3 // 2 + dx3, canvas_center_y - h3 // 2 + dy3),
+            4: (canvas_center_x + w4 // 2 + dx4, canvas_center_y + h4 // 2 + dy4)
         }
 
         delta_angles = {1:da1, 2:da2, 3:da3, 4:da4}
@@ -270,13 +270,13 @@ if img_tl and img_bl and img_br and img_tr:
             data = info_dict[pos]
             msk = data['mask']
             map = data['map']
-            centroid = data['centroid']
-            raw_angle = data['raw_angle']
+            
+            img_h, img_w = map_img.shape[:2]
+            img_center = (img_w / 2.0, img_h / 2.0)
+            
+            rotation_needed = delta_angles[pos]
 
-            target_angle = 90
-            rotation_needed = raw_angle + delta_angles[pos]
-
-            M_rot = cv2.getRotationMatrix2D(centroid, rotation_needed, 1.0)
+            M_rot = cv2.getRotationMatrix2D(img_center, rotation_needed, 1.0)
 
             target_x, target_y = quadrant_targets[pos]
             M_rot[0, 2] += (target_x - centroid[0])
