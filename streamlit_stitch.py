@@ -3,6 +3,7 @@ from PIL import Image
 import numpy as np
 import cv2
 import os
+import io
 
 def flip_image(uploaded_file, flip_h, flip_v):
     if uploaded_file is None:
