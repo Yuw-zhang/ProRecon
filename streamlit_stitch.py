@@ -277,6 +277,11 @@ if img_tl and img_bl and img_br and img_tr:
             
             slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
+        result_img = Image.fromarray(slide_canvas)
+        buf = io.BytesIO()
+        result_img.save(buf, format="PNG")
+        byte_im = buf.getvalue()
+        
         with col_img:
             st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
             st.subheader("Reconstructed specimen")
