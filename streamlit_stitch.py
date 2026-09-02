@@ -281,6 +281,14 @@ if img_tl and img_bl and img_br and img_tr:
             st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
+
+            st.download_button(
+                label='Download PNG',
+                data=byte_im,
+                file_name='reconstructed.png',
+                mime='image/png',
+                type='primary'
+            )
     else:
         with col_img:
             st.info("Please upload maps and click 'Start'")
