@@ -2,7 +2,6 @@ import streamlit as st
 from PIL import Image
 import numpy as np
 import cv2
-import os
 import io
 
 def flip_image(uploaded_file, flip_h, flip_v):
@@ -16,77 +15,44 @@ def flip_image(uploaded_file, flip_h, flip_v):
     img = np.array(img.convert("RGB"))
     return img
 
-def get_majorTumor(msk):
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(msk, connectivity=8)
-    if num_labels <= 1:
-        return msk
-    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-    main_mask = np.zeros_like(msk)
-    main_mask[labels == largest_label] = 255
-    return main_mask
-
 def get_mask(img):
-    # Extract tissue mask based on non-white pixels
+    """ Extract tissue mask based on non-white pixels """
     white = np.all(img == [255, 255, 255], axis=2)
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask[~white] = 255
     return mask
 
-def fit_circle_center(all_pts):
-    if len(all_pts) < 3: return (0, 0)
-    x = all_pts[:, 0]
-    y = all_pts[:, 1]
-
-    A_matrix = np.column_stack((x, y, np.ones(x.shape[0])))
-    b_matrix = x**2 + y**2
-
-    result, residues, rank, sing = np.linalg.lstsq(A_matrix, b_matrix, rcond=None)
-    center_x = result[0] / 2
-    center_y = result[1] / 2
-
-    return (center_x, center_y)
-
 def get_centroid(msk):
+    """ Calculate centroid of tissue mask """
     moments = cv2.moments(msk)
     if moments["m00"] == 0:
         return (msk.shape[1] / 2, msk.shape[0] / 2)
     centroid = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
     return centroid
 
-def get_rectInfo(msk):
+def get_auto_rectify_angle(msk, pos):
+    """
+    Calculate the rotation angle required to rectify (straighten) the slice 
+    based on the minimum area bounding box of the tissue mask.
+    """
     contours, _ = cv2.findContours(msk, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return 0, msk.shape[0], msk.shape[1]
+        return 0.0
     c = max(contours, key=cv2.contourArea)
     rect = cv2.minAreaRect(c)
     box_width, box_height = rect[1]
     rect_angle = rect[2]
 
-    if box_width >= box_height:
-        length = box_width
-        width = box_height
-        raw_angle = rect_angle
+    # Normalize angle based on aspect ratio
+    if box_width < box_height:
+        raw_angle = rect_angle - 90.0
     else:
-        length = box_height
-        width = box_width
-        raw_angle = rect_angle + 90.0
+        raw_angle = rect_angle
 
     if raw_angle > 180: raw_angle -= 360
     elif raw_angle < -180: raw_angle += 360
 
-    return raw_angle, length, width
-
-def apply_tps_transform(image, src_points, dst_points):
-    if len(src_points) < 4:
-        return image
-    
-    src_pts = np.array([src_points], dtype=np.float32)
-    dst_pts = np.array([dst_points], dtype=np.float32)
-    matches = [cv2.DMatch(i, i, 0) for i in range(len(src_points))]
-
-    tps = cv2.createThinPlateSplineShapeTransformer()
-    tps.estimateTransformation(dst_pts, src_pts, matches)
-    return tps.warpImage(image)
+    return raw_angle
 
 def get_inner_corner_offset(mask, pos):
     """
@@ -112,6 +78,18 @@ def get_inner_corner_offset(mask, pos):
         idx = np.argmin(pts[:, 0] + pts[:, 1])
     
     return pts[idx][0], pts[idx][1]
+
+def apply_tps_transform(image, src_points, dst_points):
+    if len(src_points) < 4:
+        return image
+    
+    src_pts = np.array([src_points], dtype=np.float32)
+    dst_pts = np.array([dst_points], dtype=np.float32)
+    matches = [cv2.DMatch(i, i, 0) for i in range(len(src_points))]
+
+    tps = cv2.createThinPlateSplineShapeTransformer()
+    tps.estimateTransformation(dst_pts, src_pts, matches)
+    return tps.warpImage(image)
 
 def reset_stitch_state():
     st.session_state["has_stitched"] = False 
@@ -213,7 +191,7 @@ if img_tl and img_bl and img_br and img_tr:
         im3 = flip_image(img_tr, flip_tr_h, flip_tr_v)
         im4 = flip_image(img_br, flip_br_h, flip_br_v)
 
-        # 2. Extract gray tissue mask (non-white region)
+        # 2. Extract gray tissue mask
         msk1 = get_mask(im1)
         msk2 = get_mask(im2)
         msk3 = get_mask(im3)
@@ -234,26 +212,34 @@ if img_tl and img_bl and img_br and img_tr:
         canvas_cx = slide_canvas.shape[1] // 2
         canvas_cy = slide_canvas.shape[0] // 2
 
-        # 4. Automatic Alignment: Extract actual inner tissue corner points and snap them to canvas center
+        # 4. Two-Step Alignment: (Step 1: Rectify/Straighten -> Step 2: Inner-Corner Snap)
         for pos in required_pos:
             item = info_dict[pos]
             map_img = item['map']
             msk = item['mask']
             
-            # Locate the actual inner cutting corner of the tissue specimen
-            corner_x, corner_y = get_inner_corner_offset(msk, pos)
+            # --- STEP 1: Calculate Centroid / Rectify Angle to Straighten the Slice ---
+            centroid_x, centroid_y = get_centroid(msk)
+            auto_angle = get_auto_rectify_angle(msk, pos)
+            total_angle = auto_angle + item['da']
 
-            # Rotation matrix: Rotate around the calculated inner corner point
-            rotation_angle = item['da']
-            M_rot = cv2.getRotationMatrix2D((float(corner_x), float(corner_y)), rotation_angle, 1.0)
+            # Rotate slice around its centroid to rectify orientation
+            M_rectify = cv2.getRotationMatrix2D((centroid_x, centroid_y), total_angle, 1.0)
+            rectified_map = cv2.warpAffine(map_img, M_rectify, (map_img.shape[1], map_img.shape[0]))
+            rectified_mask = cv2.warpAffine(msk, M_rectify, (msk.shape[1], msk.shape[0]))
 
-            # Translation matrix: Align inner corner directly to canvas center + manual slider offsets
-            M_rot[0, 2] += (canvas_cx - corner_x) + item['dx']
-            M_rot[1, 2] += (canvas_cy - corner_y) + item['dy']
+            # --- STEP 2: Find Inner Cutting Corner AFTER Rectification & Snap to Canvas Center ---
+            corner_x, corner_y = get_inner_corner_offset(rectified_mask, pos)
 
-            # Apply affine transformation
-            transformed_map = cv2.warpAffine(map_img, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
-            transformed_mask = cv2.warpAffine(msk, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
+            # Translation matrix: Align rectified inner corner directly to canvas center
+            M_translate = np.float32([
+                [1, 0, (canvas_cx - corner_x) + item['dx']],
+                [0, 1, (canvas_cy - corner_y) + item['dy']]
+            ])
+
+            # Apply final translation to canvas
+            transformed_map = cv2.warpAffine(rectified_map, M_translate, (slide_canvas.shape[1], slide_canvas.shape[0]))
+            transformed_mask = cv2.warpAffine(rectified_mask, M_translate, (slide_canvas.shape[1], slide_canvas.shape[0]))
 
             # Blend onto canvas
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
@@ -278,16 +264,18 @@ if img_tl and img_bl and img_br and img_tr:
             
             slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
+        # 6. Convert slide_canvas to BytesIO for download button
         result_img = Image.fromarray(slide_canvas)
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
         byte_im = buf.getvalue()
-        
+
         with col_img:
             st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
-
+            
+            # Download Button
             st.download_button(
                 label='Download PNG',
                 data=byte_im,
