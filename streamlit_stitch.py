@@ -30,70 +30,50 @@ def get_mask(img):
     mask[~white] = 255
     return mask
 
-def fit_circle_center(all_pts):
-    if len(all_pts) < 3: return (0, 0)
-    x = all_pts[:, 0]
-    y = all_pts[:, 1]
-
-    A_matrix = np.column_stack((x, y, np.ones(x.shape[0])))
-    b_matrix = x**2 + y**2
-
-    result, residues, rank, sing = np.linalg.lstsq(A_matrix, b_matrix, rcond=None)
-    center_x = result[0] / 2
-    center_y = result[1] / 2
-
-    return (center_x, center_y)
-
-def get_centroid(msk):
-    moments = cv2.moments(msk)
-    if moments["m00"] == 0:
-        return (msk.shape[1] / 2, msk.shape[0] / 2)
-    centroid = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
-    return centroid
-
-def get_rectInfo(msk):
-    contours, _ = cv2.findContours(msk, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def get_auto_flatten_angle(mask, pos):
+    """
+    Detect the angle of the inner cut edges and calculate required rotation to flatten them.
+    Position 1 (TopLeft):      Flattens bottom and right inner boundaries
+    Position 2 (BottomLeft):   Flattens top and right inner boundaries
+    Position 3 (TopRight):     Flattens bottom and left inner boundaries
+    Position 4 (BottomRight):  Flattens top and left inner boundaries
+    """
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return 0, msk.shape[0], msk.shape[1]
-    c = max(contours, key=cv2.contourArea)
-    rect = cv2.minAreaRect(c)
-    box_width, box_height = rect[1]
-    rect_angle = rect[2]
-
-    if box_width >= box_height:
-        length = box_width
-        width = box_height
-        raw_angle = rect_angle
-    else:
-        length = box_height
-        width = box_width
-        raw_angle = rect_angle + 90.0
-
-    if raw_angle > 180: raw_angle -= 360
-    elif raw_angle < -180: raw_angle += 360
-
-    return raw_angle, length, width
-
-def apply_tps_transform(image, src_points, dst_points):
-    if len(src_points) < 4:
-        return image
+        return 0.0
     
-    src_pts = np.array([src_points], dtype=np.float32)
-    dst_pts = np.array([dst_points], dtype=np.float32)
-    matches = [cv2.DMatch(i, i, 0) for i in range(len(src_points))]
+    c = max(contours, key=cv2.contourArea)
+    pts = c.reshape(-1, 2)
 
-    tps = cv2.createThinPlateSplineShapeTransformer()
-    tps.estimateTransformation(dst_pts, src_pts, matches)
-    return tps.warpImage(image)
+    # Filter points near the inner region to fit line angle
+    if pos == 1:   # TopLeft -> Filter bottom/rightmost points
+        edge_pts = pts[(pts[:, 0] > np.median(pts[:, 0])) | (pts[:, 1] > np.median(pts[:, 1]))]
+    elif pos == 2: # BottomLeft -> Filter top/rightmost points
+        edge_pts = pts[(pts[:, 0] > np.median(pts[:, 0])) | (pts[:, 1] < np.median(pts[:, 1]))]
+    elif pos == 3: # TopRight -> Filter bottom/leftmost points
+        edge_pts = pts[(pts[:, 0] < np.median(pts[:, 0])) | (pts[:, 1] > np.median(pts[:, 1]))]
+    elif pos == 4: # BottomRight -> Filter top/leftmost points
+        edge_pts = pts[(pts[:, 0] < np.median(pts[:, 0])) | (pts[:, 1] < np.median(pts[:, 1]))]
+
+    if len(edge_pts) < 5:
+        return 0.0
+
+    # Fit a straight line to the primary inner edge
+    [vx, vy, x, y] = cv2.fitLine(edge_pts, cv2.DIST_L2, 0, 0.01, 0.01)
+    angle_rad = np.arctan2(vy[0], vx[0])
+    angle_deg = np.degrees(angle_rad)
+
+    # Snap angle towards nearest 0 or 90 degrees
+    remainder = angle_deg % 90.0
+    if remainder > 45.0:
+        flatten_angle = -(90.0 - remainder)
+    else:
+        flatten_angle = remainder
+
+    return float(flatten_angle)
 
 def get_inner_corner_offset(mask, pos):
-    """
-    Locate the inner corner point of the tissue slice facing towards the center.
-    Position 1 (TopLeft):      Target bottom-right corner point
-    Position 2 (BottomLeft):   Target top-right corner point
-    Position 3 (TopRight):     Target bottom-left corner point
-    Position 4 (BottomRight):  Target top-left corner point
-    """
+    """ Locate the inner corner point of the tissue slice facing towards the canvas center. """
     pts = cv2.findNonZero(mask)
     if pts is None:
         return mask.shape[1] // 2, mask.shape[0] // 2
@@ -111,6 +91,18 @@ def get_inner_corner_offset(mask, pos):
     
     return pts[idx][0], pts[idx][1]
 
+def apply_tps_transform(image, src_points, dst_points):
+    if len(src_points) < 4:
+        return image
+    
+    src_pts = np.array([src_points], dtype=np.float32)
+    dst_pts = np.array([dst_points], dtype=np.float32)
+    matches = [cv2.DMatch(i, i, 0) for i in range(len(src_points))]
+
+    tps = cv2.createThinPlateSplineShapeTransformer()
+    tps.estimateTransformation(dst_pts, src_pts, matches)
+    return tps.warpImage(image)
+
 def reset_stitch_state():
     st.session_state["has_stitched"] = False 
 
@@ -118,7 +110,6 @@ def reset_stitch_state():
 st.title('PCa Reconstruction')
 col1, col2 = st.columns(2)
 with col1:
-    # Panel for Img1: TopLeft
     img_tl = st.file_uploader("TopLeft", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
     flip_tl_h = st.checkbox("Horizontal Flip", key="tl_h")
     flip_tl_v = st.checkbox("Vertical Flip", key="tl_v")
@@ -126,7 +117,6 @@ with col1:
         preview_tl = flip_image(img_tl, flip_tl_h, flip_tl_v)
         st.image(preview_tl, caption='TopLeft view')
 
-    # Panel for Img2: BottomLeft
     img_bl = st.file_uploader("BottomLeft", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
     flip_bl_h = st.checkbox("Horizontal Flip", key="bl_h")
     flip_bl_v = st.checkbox("Vertical Flip", key="bl_v")
@@ -135,7 +125,6 @@ with col1:
         st.image(preview_bl, caption='BottomLeft view')
 
 with col2:
-    # Panel for Img3: TopRight
     img_tr = st.file_uploader("TopRight", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
     flip_tr_h = st.checkbox("Horizontal Flip", key="tr_h")
     flip_tr_v = st.checkbox("Vertical Flip", key="tr_v")
@@ -143,7 +132,6 @@ with col2:
         preview_tr = flip_image(img_tr, flip_tr_h, flip_tr_v)
         st.image(preview_tr, caption='TopRight view')
 
-    # Panel for Img4: BottomRight
     img_br = st.file_uploader("BottomRight", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
     flip_br_h = st.checkbox("Horizontal Flip", key="br_h")
     flip_br_v = st.checkbox("Vertical Flip", key="br_v")
@@ -165,6 +153,7 @@ if img_tl and img_bl and img_br and img_tr:
 
     with col_ctrl:
         st.subheader("⚙️ Resection (Fine-tune Offsets)")  
+        auto_flatten = st.checkbox("Enable Auto-Flattening Cut Edges", value=True)
         if st.button("Start", type="primary"):
             st.session_state["has_stitched"] = True
 
@@ -205,7 +194,7 @@ if img_tl and img_bl and img_br and img_tr:
             tps_strength = 0
 
     if st.session_state["has_stitched"]:
-        # 1. Load images and apply flips
+        # 1. Image preprocessing and flip application
         im1 = flip_image(img_tl, flip_tl_h, flip_tl_v)
         im2 = flip_image(img_bl, flip_bl_h, flip_bl_v)
         im3 = flip_image(img_tr, flip_tr_h, flip_tr_v)
@@ -231,7 +220,7 @@ if img_tl and img_bl and img_br and img_tr:
         canvas_cx = slide_canvas.shape[1] // 2
         canvas_cy = slide_canvas.shape[0] // 2
 
-        # 3. Rotate using single expanded canvas to avoid image clipping, then perform inner corner alignment
+        # 3. Stitching with Auto-Flattening and Inner Corner Snap
         for pos in required_pos:
             item = info_dict[pos]
             map_img = item['map']
@@ -239,7 +228,7 @@ if img_tl and img_bl and img_br and img_tr:
             
             img_h, img_w = map_img.shape[:2]
             
-            # Create a padded temporary canvas for single slice rotation to avoid clipping bounds
+            # Create a padded temporary canvas to avoid border cropping
             pad = max(img_h, img_w)
             temp_h, temp_w = img_h + 2 * pad, img_w + 2 * pad
             
@@ -249,19 +238,21 @@ if img_tl and img_bl and img_br and img_tr:
             temp_map[pad:pad+img_h, pad:pad+img_w] = map_img
             temp_mask[pad:pad+img_h, pad:pad+img_w] = msk
             
-            # Center point of the padded slice
             temp_cx, temp_cy = pad + img_w / 2.0, pad + img_h / 2.0
+
+            # Step 3a: Calculate auto-flattening angle if enabled
+            auto_angle = get_auto_flatten_angle(msk, pos) if auto_flatten else 0.0
+            total_angle = auto_angle + item['da']
             
-            # Perform rotation (Exact same logic as Version 1 without border cropping)
-            M_rot = cv2.getRotationMatrix2D((temp_cx, temp_cy), item['da'], 1.0)
-            
+            # Step 3b: Perform rotation
+            M_rot = cv2.getRotationMatrix2D((temp_cx, temp_cy), total_angle, 1.0)
             rotated_map = cv2.warpAffine(temp_map, M_rot, (temp_w, temp_h))
             rotated_mask = cv2.warpAffine(temp_mask, M_rot, (temp_w, temp_h))
 
-            # Extract the actual inner corner from the un-clipped rotated slice
+            # Step 3c: Extract inner corner from the flattened/rotated slice
             corner_x, corner_y = get_inner_corner_offset(rotated_mask, pos)
 
-            # Translate inner corner to main canvas center + slider offsets
+            # Step 3d: Align flattened corner to canvas center + manual offset
             M_trans = np.float32([
                 [1, 0, (canvas_cx - corner_x) + item['dx']],
                 [0, 1, (canvas_cy - corner_y) + item['dy']]
@@ -270,7 +261,7 @@ if img_tl and img_bl and img_br and img_tr:
             transformed_map = cv2.warpAffine(rotated_map, M_trans, (slide_canvas.shape[1], slide_canvas.shape[0]))
             transformed_mask = cv2.warpAffine(rotated_mask, M_trans, (slide_canvas.shape[1], slide_canvas.shape[0]))
 
-            # Blend transformed slice into main canvas
+            # Blend onto main canvas
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
 
         # 4. TPS Warping
