@@ -205,7 +205,7 @@ if img_tl and img_bl and img_br and img_tr:
             tps_strength = 0
 
     if st.session_state["has_stitched"]:
-        # 1. Image preprocessing and flip application
+        # 1. Load images and apply flips
         im1 = flip_image(img_tl, flip_tl_h, flip_tl_v)
         im2 = flip_image(img_bl, flip_bl_h, flip_bl_v)
         im3 = flip_image(img_tr, flip_tr_h, flip_tr_v)
@@ -223,7 +223,7 @@ if img_tl and img_bl and img_br and img_tr:
             4: {'map': im4, 'mask': msk4, 'dx': dx4, 'dy': dy4, 'da': da4},
         }
 
-        # 2. Canvas creation based on maximum image dimensions
+        # 2. Main canvas setup
         max_h = max(im.shape[0] for im in [im1, im2, im3, im4])
         max_w = max(im.shape[1] for im in [im1, im2, im3, im4])
         slide_canvas = np.zeros((max_h * 3, max_w * 3, 3), dtype=np.uint8)
@@ -231,25 +231,37 @@ if img_tl and img_bl and img_br and img_tr:
         canvas_cx = slide_canvas.shape[1] // 2
         canvas_cy = slide_canvas.shape[0] // 2
 
-        # 3. Primary Version Rotation Logic + Inner Corner Snap Alignment
+        # 3. Rotate using single expanded canvas to avoid image clipping, then perform inner corner alignment
         for pos in required_pos:
             item = info_dict[pos]
             map_img = item['map']
             msk = item['mask']
             
-            # Step 3a: Perform center-based rotation (Identical to Version 1)
             img_h, img_w = map_img.shape[:2]
-            img_cx, img_cy = img_w / 2.0, img_h / 2.0
             
-            M_rot = cv2.getRotationMatrix2D((img_cx, img_cy), item['da'], 1.0)
+            # Create a padded temporary canvas for single slice rotation to avoid clipping bounds
+            pad = max(img_h, img_w)
+            temp_h, temp_w = img_h + 2 * pad, img_w + 2 * pad
             
-            rotated_map = cv2.warpAffine(map_img, M_rot, (img_w, img_h))
-            rotated_mask = cv2.warpAffine(msk, M_rot, (img_w, img_h))
+            temp_map = np.zeros((temp_h, temp_w, 3), dtype=np.uint8)
+            temp_mask = np.zeros((temp_h, temp_w), dtype=np.uint8)
+            
+            temp_map[pad:pad+img_h, pad:pad+img_w] = map_img
+            temp_mask[pad:pad+img_h, pad:pad+img_w] = msk
+            
+            # Center point of the padded slice
+            temp_cx, temp_cy = pad + img_w / 2.0, pad + img_h / 2.0
+            
+            # Perform rotation (Exact same logic as Version 1 without border cropping)
+            M_rot = cv2.getRotationMatrix2D((temp_cx, temp_cy), item['da'], 1.0)
+            
+            rotated_map = cv2.warpAffine(temp_map, M_rot, (temp_w, temp_h))
+            rotated_mask = cv2.warpAffine(temp_mask, M_rot, (temp_w, temp_h))
 
-            # Step 3b: Extract inner corner point from the rotated slice
+            # Extract the actual inner corner from the un-clipped rotated slice
             corner_x, corner_y = get_inner_corner_offset(rotated_mask, pos)
 
-            # Step 3c: Translate inner corner directly to canvas center + manual slider adjustments
+            # Translate inner corner to main canvas center + slider offsets
             M_trans = np.float32([
                 [1, 0, (canvas_cx - corner_x) + item['dx']],
                 [0, 1, (canvas_cy - corner_y) + item['dy']]
@@ -261,7 +273,7 @@ if img_tl and img_bl and img_br and img_tr:
             # Blend transformed slice into main canvas
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
 
-        # 4. Non-rigid TPS Warping
+        # 4. TPS Warping
         if enable_tps:
             ch, cw = slide_canvas.shape[:2]
             cx, cy = cw // 2, ch // 2
@@ -281,7 +293,7 @@ if img_tl and img_bl and img_br and img_tr:
             
             slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
-        # 5. Convert canvas image to BytesIO stream for download
+        # 5. Export canvas to PNG byte stream for downloading
         result_img = Image.fromarray(slide_canvas)
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
@@ -292,7 +304,7 @@ if img_tl and img_bl and img_br and img_tr:
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
             
-            # Download PNG Feature
+            # Download PNG Button
             st.download_button(
                 label='Download PNG',
                 data=byte_im,
