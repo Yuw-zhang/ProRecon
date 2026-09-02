@@ -32,45 +32,27 @@ def get_mask(img):
 
 def get_auto_flatten_angle(mask, pos):
     """
-    Detect the angle of the inner cut edges and calculate required rotation to flatten them.
-    Position 1 (TopLeft):      Flattens bottom and right inner boundaries
-    Position 2 (BottomLeft):   Flattens top and right inner boundaries
-    Position 3 (TopRight):     Flattens bottom and left inner boundaries
-    Position 4 (BottomRight):  Flattens top and left inner boundaries
+    Find the inner straight cut edges and calculate rotation needed to make them flat (0° / 90°).
     """
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return 0.0
     
     c = max(contours, key=cv2.contourArea)
-    pts = c.reshape(-1, 2)
+    rect = cv2.minAreaRect(c)
+    (cx, cy), (width, height), angle = rect
 
-    # Filter points near the inner region to fit line angle
-    if pos == 1:   # TopLeft -> Filter bottom/rightmost points
-        edge_pts = pts[(pts[:, 0] > np.median(pts[:, 0])) | (pts[:, 1] > np.median(pts[:, 1]))]
-    elif pos == 2: # BottomLeft -> Filter top/rightmost points
-        edge_pts = pts[(pts[:, 0] > np.median(pts[:, 0])) | (pts[:, 1] < np.median(pts[:, 1]))]
-    elif pos == 3: # TopRight -> Filter bottom/leftmost points
-        edge_pts = pts[(pts[:, 0] < np.median(pts[:, 0])) | (pts[:, 1] > np.median(pts[:, 1]))]
-    elif pos == 4: # BottomRight -> Filter top/leftmost points
-        edge_pts = pts[(pts[:, 0] < np.median(pts[:, 0])) | (pts[:, 1] < np.median(pts[:, 1]))]
+    # Normalize minimum area rectangle angle
+    if width < height:
+        angle = angle - 90.0
+    
+    # Keep angle within [-45, 45] range to avoid unexpected upside-down flips
+    while angle > 45.0:
+        angle -= 90.0
+    while angle < -45.0:
+        angle += 90.0
 
-    if len(edge_pts) < 5:
-        return 0.0
-
-    # Fit a straight line to the primary inner edge
-    [vx, vy, x, y] = cv2.fitLine(edge_pts, cv2.DIST_L2, 0, 0.01, 0.01)
-    angle_rad = np.arctan2(vy[0], vx[0])
-    angle_deg = np.degrees(angle_rad)
-
-    # Snap angle towards nearest 0 or 90 degrees
-    remainder = angle_deg % 90.0
-    if remainder > 45.0:
-        flatten_angle = -(90.0 - remainder)
-    else:
-        flatten_angle = remainder
-
-    return float(flatten_angle)
+    return -angle
 
 def get_inner_corner_offset(mask, pos):
     """ Locate the inner corner point of the tissue slice facing towards the canvas center. """
@@ -80,13 +62,13 @@ def get_inner_corner_offset(mask, pos):
     
     pts = pts.reshape(-1, 2)
     
-    if pos == 1:   # TopLeft -> Bottom-Right point
+    if pos == 1:   # TopLeft -> Corner facing Bottom-Right
         idx = np.argmax(pts[:, 0] + pts[:, 1])
-    elif pos == 2: # BottomLeft -> Top-Right point
+    elif pos == 2: # BottomLeft -> Corner facing Top-Right
         idx = np.argmax(pts[:, 0] - pts[:, 1])
-    elif pos == 3: # TopRight -> Bottom-Left point
+    elif pos == 3: # TopRight -> Corner facing Bottom-Left
         idx = np.argmax(-pts[:, 0] + pts[:, 1])
-    elif pos == 4: # BottomRight -> Top-Left point
+    elif pos == 4: # BottomRight -> Corner facing Top-Left
         idx = np.argmin(pts[:, 0] + pts[:, 1])
     
     return pts[idx][0], pts[idx][1]
@@ -194,7 +176,7 @@ if img_tl and img_bl and img_br and img_tr:
             tps_strength = 0
 
     if st.session_state["has_stitched"]:
-        # 1. Image preprocessing and flip application
+        # 1. Preprocess images
         im1 = flip_image(img_tl, flip_tl_h, flip_tl_v)
         im2 = flip_image(img_bl, flip_bl_h, flip_bl_v)
         im3 = flip_image(img_tr, flip_tr_h, flip_tr_v)
@@ -212,7 +194,7 @@ if img_tl and img_bl and img_br and img_tr:
             4: {'map': im4, 'mask': msk4, 'dx': dx4, 'dy': dy4, 'da': da4},
         }
 
-        # 2. Main canvas setup
+        # 2. Setup canvas
         max_h = max(im.shape[0] for im in [im1, im2, im3, im4])
         max_w = max(im.shape[1] for im in [im1, im2, im3, im4])
         slide_canvas = np.zeros((max_h * 3, max_w * 3, 3), dtype=np.uint8)
@@ -220,7 +202,7 @@ if img_tl and img_bl and img_br and img_tr:
         canvas_cx = slide_canvas.shape[1] // 2
         canvas_cy = slide_canvas.shape[0] // 2
 
-        # 3. Stitching with Auto-Flattening and Inner Corner Snap
+        # 3. Process each slice
         for pos in required_pos:
             item = info_dict[pos]
             map_img = item['map']
@@ -228,7 +210,7 @@ if img_tl and img_bl and img_br and img_tr:
             
             img_h, img_w = map_img.shape[:2]
             
-            # Create a padded temporary canvas to avoid border cropping
+            # Pad canvas to prevent cropping during rotation
             pad = max(img_h, img_w)
             temp_h, temp_w = img_h + 2 * pad, img_w + 2 * pad
             
@@ -240,19 +222,19 @@ if img_tl and img_bl and img_br and img_tr:
             
             temp_cx, temp_cy = pad + img_w / 2.0, pad + img_h / 2.0
 
-            # Step 3a: Calculate auto-flattening angle if enabled
+            # Calculate rotation: Auto-flatten angle + manual slider angle (da)
             auto_angle = get_auto_flatten_angle(msk, pos) if auto_flatten else 0.0
             total_angle = auto_angle + item['da']
             
-            # Step 3b: Perform rotation
+            # Rotate slice around center
             M_rot = cv2.getRotationMatrix2D((temp_cx, temp_cy), total_angle, 1.0)
             rotated_map = cv2.warpAffine(temp_map, M_rot, (temp_w, temp_h))
             rotated_mask = cv2.warpAffine(temp_mask, M_rot, (temp_w, temp_h))
 
-            # Step 3c: Extract inner corner from the flattened/rotated slice
+            # Locate the inner corner on rotated mask
             corner_x, corner_y = get_inner_corner_offset(rotated_mask, pos)
 
-            # Step 3d: Align flattened corner to canvas center + manual offset
+            # Align inner corner to canvas center with manual dx/dy offset
             M_trans = np.float32([
                 [1, 0, (canvas_cx - corner_x) + item['dx']],
                 [0, 1, (canvas_cy - corner_y) + item['dy']]
@@ -261,10 +243,10 @@ if img_tl and img_bl and img_br and img_tr:
             transformed_map = cv2.warpAffine(rotated_map, M_trans, (slide_canvas.shape[1], slide_canvas.shape[0]))
             transformed_mask = cv2.warpAffine(rotated_mask, M_trans, (slide_canvas.shape[1], slide_canvas.shape[0]))
 
-            # Blend onto main canvas
+            # Paste into canvas
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
 
-        # 4. TPS Warping
+        # 4. Apply TPS transform if enabled
         if enable_tps:
             ch, cw = slide_canvas.shape[:2]
             cx, cy = cw // 2, ch // 2
@@ -284,7 +266,7 @@ if img_tl and img_bl and img_br and img_tr:
             
             slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
-        # 5. Export canvas to PNG byte stream for downloading
+        # 5. Export PNG download
         result_img = Image.fromarray(slide_canvas)
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
@@ -295,7 +277,6 @@ if img_tl and img_bl and img_br and img_tr:
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
             
-            # Download PNG Button
             st.download_button(
                 label='Download PNG',
                 data=byte_im,
