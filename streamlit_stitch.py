@@ -131,6 +131,7 @@ with col2:
 info_dict = {}
 required_pos = [1, 2, 3, 4]
 slide_canvas = None
+
 if "has_stitched" not in st.session_state:
     st.session_state["has_stitched"] = False
 
@@ -138,7 +139,7 @@ if img_tl and img_bl and img_br and img_tr:
     col_img, col_ctrl = st.columns([2, 1])
 
     with col_ctrl:
-        st.subheader("⚙️ Resction (Fine-tune Offsets)")  
+        st.subheader("⚙️ Resection (Fine-tune Offsets)")  
         if st.button("Start", type="primary"):
             st.session_state["has_stitched"] = True
 
@@ -191,98 +192,55 @@ if img_tl and img_bl and img_br and img_tr:
         _, msk3 = cv2.threshold(get_majorTumor(get_mask(im3)), 1, 255, cv2.THRESH_BINARY)
         _, msk4 = cv2.threshold(get_majorTumor(get_mask(im4)), 1, 255, cv2.THRESH_BINARY)
 
-        # get the centroid
-        centroid1 = get_centroid(msk1)
-        centroid2 = get_centroid(msk2)
-        centroid3 = get_centroid(msk3)
-        centroid4 = get_centroid(msk4)
+        info_dict[1] = {'mask': msk1, 'map': im1}
+        info_dict[2] = {'mask': msk2, 'map': im2}
+        info_dict[3] = {'mask': msk3, 'map': im3}
+        info_dict[4] = {'mask': msk4, 'map': im4}
 
-        # get the bbox rect info
+        # create canvas
+        max_h = max(im1.shape[0], im2.shape[0], im3.shape[0], im4.shape[0])
+        max_w = max(im1.shape[1], im2.shape[1], im3.shape[1], im4.shape[1])
+        slide_canvas = np.zeros((max_h * 3, max_w * 3, 3), dtype=np.uint8)
+
+        canvas_center_x = slide_canvas.shape[1] // 2
+        canvas_center_y = slide_canvas.shape[0] // 2
+
+        # get height and width
         h1, w1 = im1.shape[:2]
         h2, w2 = im2.shape[:2]
         h3, w3 = im3.shape[:2]
         h4, w4 = im4.shape[:2]
 
-        info_dict[1] = {
-            'mask': msk1,
-            'map': im1,
-            'centroid': centroid1,
-            'raw_angle':angle1,
-            'height':h1,
-            'width': w1
-        }
-        info_dict[2] = {
-            'mask': msk2,
-            'map': im2,
-            'centroid': centroid2,
-            'raw_angle':angle2,
-            'height':h2,
-            'width': w2
-        }
-        info_dict[3] = {
-            'mask': msk3,
-            'map': im3,
-            'centroid': centroid3,
-            'raw_angle':angle3,
-            'height':h3,
-            'width': w3
-        }
-        info_dict[4] = {
-            'mask': msk4,
-            'map': im4,
-            'centroid': centroid4,
-            'raw_angle':angle4,
-            'height':h4,
-            'width': w4
-        }
-        if not all(pos in info_dict for pos in required_pos):
-            print("Error: missing img info, stitching failed!")
-
-        any_pos = required_pos[0]
-        h, w = info_dict[any_pos]['mask'].shape[:2]
-        slide_canvas = np.zeros((int(h*4), int(w*4), 3), dtype=np.uint8)
-
-        canvas_center_x = slide_canvas.shape[1] // 2
-        canvas_center_y = slide_canvas.shape[0] // 2
-
-        gap_factor = 1.0
-
-        left_height = (info_dict[1]['height']+ info_dict[1]['height'])/2
-        right_height = (info_dict[2]['height']+ info_dict[2]['height'])/2
-
-        top_width = (info_dict[3]['width']+ info_dict[3]['width'])/2
-        bottom_width = (info_dict[4]['width']+ info_dict[4]['width'])/2
-
-        offset_x_left = int((left_height / 2.0) * gap_factor)
-        offset_x_right = int((right_height / 2.0) * gap_factor)
-        offset_y_top = int((top_width / 2.0) * gap_factor)
-        offset_y_bottom = int((bottom_width / 2.0) * gap_factor)
 
         quadrant_targets = {
-            1: (canvas_center_x - w1 // 2 + dx1, canvas_center_y - h1 // 2 + dy1),
-            2: (canvas_center_x - w2 // 2 + dx2, canvas_center_y + h2 // 2 + dy2),
-            3: (canvas_center_x + w3 // 2 + dx3, canvas_center_y - h3 // 2 + dy3),
-            4: (canvas_center_x + w4 // 2 + dx4, canvas_center_y + h4 // 2 + dy4)
+            1: (canvas_center_x - w1 / 2.0 + dx1, canvas_center_y - h1 / 2.0 + dy1),  # TopLeft: 右下角对齐中心
+            2: (canvas_center_x - w2 / 2.0 + dx2, canvas_center_y + h2 / 2.0 + dy2),  # BottomLeft: 右上角对齐中心
+            3: (canvas_center_x + w3 / 2.0 + dx3, canvas_center_y - h3 / 2.0 + dy3),  # TopRight: 左下角对齐中心
+            4: (canvas_center_x + w4 / 2.0 + dx4, canvas_center_y + h4 / 2.0 + dy4)   # BottomRight: 左上角对齐中心
         }
 
-        delta_angles = {1:da1, 2:da2, 3:da3, 4:da4}
+        delta_angles = {1: da1, 2: da2, 3: da3, 4: da4}
+
         for pos in required_pos:
             data = info_dict[pos]
             msk = data['mask']
-            map = data['map']
-            
+            map_img = data['map']
+
+            # get centroid
             img_h, img_w = map_img.shape[:2]
             img_center = (img_w / 2.0, img_h / 2.0)
-            
-            rotation_needed = delta_angles[pos]
 
+            # rotation
+            rotation_needed = delta_angles[pos]
             M_rot = cv2.getRotationMatrix2D(img_center, rotation_needed, 1.0)
 
+            # move
             target_x, target_y = quadrant_targets[pos]
-            M_rot[0, 2] += (target_x - centroid[0])
-            M_rot[1, 2] += (target_y - centroid[1])
+            M_rot[0, 2] += (target_x - img_center[0])
+            M_rot[1, 2] += (target_y - img_center[1])
 
-            transformed_map = cv2.warpAffine(map, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
+            # transformation
+            transformed_map = cv2.warpAffine(map_img, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
             transformed_mask = cv2.warpAffine(msk, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
 
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
@@ -292,7 +250,7 @@ if img_tl and img_bl and img_br and img_tr:
             cx, cy = cw // 2, ch // 2
 
             src_pts = [
-                [0, 0], [cw, 0], [0, ch], [cw, ch],       
+                [0, 0], [cw, 0], [0, ch], [cw, ch],             
                 [cx, cy - 100], [cx, cy + 100], [cx - 100, cy], [cx + 100, cy] 
             ]
             
@@ -307,23 +265,9 @@ if img_tl and img_bl and img_br and img_tr:
             slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
         with col_img:
-            st.markdown('<div style="height: 400px;"></div>', unsafe_allow_html=True)
+            st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
-
-            ############------save high resolution image---------##########
-            canvas_pil = Image.fromarray(slide_canvas)
-            buf = io.BytesIO()
-            canvas_pil.save(buf,  format="PNG")
-            byte_im = buf.getvalue()
-
-            st.download_button(
-                label = 'Download PNG',
-                data = byte_im,
-                file_name = 'reconstructed.png',
-                mime = 'image/png',
-                type = 'primary'
-            )
     else:
         with col_img:
-            st.info("Please upload maps and click \'Start\'")
+            st.info("Please upload maps and click 'Start'")
