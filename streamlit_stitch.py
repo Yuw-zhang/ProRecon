@@ -245,7 +245,7 @@ if img_tl and img_bl and img_br and img_tr:
         canvas_center_x = slide_canvas.shape[1] // 2
         canvas_center_y = slide_canvas.shape[0] // 2
 
-        gap_factor = 1.0
+        gap_factor = 0.1
 
         left_height = (info_dict[1]['height']+ info_dict[1]['height'])/2
         right_height = (info_dict[2]['height']+ info_dict[2]['height'])/2
