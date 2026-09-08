@@ -2,6 +2,7 @@ import streamlit as st
 from PIL import Image
 import numpy as np
 import cv2
+import os
 import io
 
 def flip_image(uploaded_file, flip_h, flip_v):
@@ -17,17 +18,17 @@ def flip_image(uploaded_file, flip_h, flip_v):
 
 def get_majorTumor(msk):
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(msk, connectivity=8)
-    if num_labels <= 1:
-        return msk
     largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
     main_mask = np.zeros_like(msk)
     main_mask[labels == largest_label] = 255
+
     return main_mask
 
 def get_mask(img):
     white = np.all(img == [255, 255, 255], axis=2)
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
-    mask[~white] = 255
+    mask[~white]=255
+
     return mask
 
 def fit_circle_center(all_pts):
@@ -46,15 +47,12 @@ def fit_circle_center(all_pts):
 
 def get_centroid(msk):
     moments = cv2.moments(msk)
-    if moments["m00"] == 0:
-        return (msk.shape[1] / 2, msk.shape[0] / 2)
     centroid = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
+
     return centroid
 
 def get_rectInfo(msk):
     contours, _ = cv2.findContours(msk, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return 0, msk.shape[0], msk.shape[1]
     c = max(contours, key=cv2.contourArea)
     rect = cv2.minAreaRect(c)
     box_width, box_height = rect[1]
@@ -86,40 +84,15 @@ def apply_tps_transform(image, src_points, dst_points):
     tps.estimateTransformation(dst_pts, src_pts, matches)
     return tps.warpImage(image)
 
-def get_inner_corner_offset(mask, pos):
-    """
-    Locate the inner corner point of the tissue slice facing towards the center.
-    Position 1 (TopLeft):      Target bottom-right corner point
-    Position 2 (BottomLeft):   Target top-right corner point
-    Position 3 (TopRight):     Target bottom-left corner point
-    Position 4 (BottomRight):  Target top-left corner point
-    """
-    pts = cv2.findNonZero(mask)
-    if pts is None:
-        return mask.shape[1] // 2, mask.shape[0] // 2
-    
-    pts = pts.reshape(-1, 2)
-    
-    if pos == 1:   # TopLeft -> Bottom-Right point
-        idx = np.argmax(pts[:, 0] + pts[:, 1])
-    elif pos == 2: # BottomLeft -> Top-Right point
-        idx = np.argmax(pts[:, 0] - pts[:, 1])
-    elif pos == 3: # TopRight -> Bottom-Left point
-        idx = np.argmax(-pts[:, 0] + pts[:, 1])
-    elif pos == 4: # BottomRight -> Top-Left point
-        idx = np.argmin(pts[:, 0] + pts[:, 1])
-    
-    return pts[idx][0], pts[idx][1]
-
 def reset_stitch_state():
     st.session_state["has_stitched"] = False 
-
-############################### LOAD TUMOR MAP ###############################
+    
+###############################LOAD TUMOR MAP###############################
 st.title('PCa Reconstruction')
 col1, col2 = st.columns(2)
 with col1:
     # Panel for Img1: TopLeft
-    img_tl = st.file_uploader("TopLeft", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
+    img_tl = st.file_uploader("TopLeft", type=['png', 'jpg', 'jpeg'],on_change=reset_stitch_state)
     flip_tl_h = st.checkbox("Horizontal Flip", key="tl_h")
     flip_tl_v = st.checkbox("Vertical Flip", key="tl_v")
     if img_tl is not None:
@@ -127,7 +100,7 @@ with col1:
         st.image(preview_tl, caption='TopLeft view')
 
     # Panel for Img2: BottomLeft
-    img_bl = st.file_uploader("BottomLeft", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
+    img_bl = st.file_uploader("BottomLeft", type=['png', 'jpg', 'jpeg'],on_change=reset_stitch_state)
     flip_bl_h = st.checkbox("Horizontal Flip", key="bl_h")
     flip_bl_v = st.checkbox("Vertical Flip", key="bl_v")
     if img_bl is not None:
@@ -136,27 +109,28 @@ with col1:
 
 with col2:
     # Panel for Img3: TopRight
-    img_tr = st.file_uploader("TopRight", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
+    img_tr = st.file_uploader("TopRight", type=['png', 'jpg', 'jpeg'],on_change=reset_stitch_state)
     flip_tr_h = st.checkbox("Horizontal Flip", key="tr_h")
     flip_tr_v = st.checkbox("Vertical Flip", key="tr_v")
     if img_tr is not None:
         preview_tr = flip_image(img_tr, flip_tr_h, flip_tr_v)
         st.image(preview_tr, caption='TopRight view')
 
-    # Panel for Img4: BottomRight
-    img_br = st.file_uploader("BottomRight", type=['png', 'jpg', 'jpeg'], on_change=reset_stitch_state)
+    # Panel for Img4: BottomLeft
+    img_br = st.file_uploader("BottomRight", type=['png', 'jpg', 'jpeg'],on_change=reset_stitch_state)
     flip_br_h = st.checkbox("Horizontal Flip", key="br_h")
     flip_br_v = st.checkbox("Vertical Flip", key="br_v")
     if img_br is not None:
-        preview_br = flip_image(img_br, flip_br_h, flip_br_v)
-        st.image(preview_br, caption='BottomRight view')
-############################### LOAD TUMOR MAP ###############################
+            preview_br = flip_image(img_br, flip_br_h, flip_br_v)
+            st.image(preview_br, caption='BottomRight view')
+###############################LOAD TUMOR MAP###############################
 
 
-############################### START TO STITCH ###############################
+
+###############################START TO STITCH###############################
+info_dict = {}
 required_pos = [1, 2, 3, 4]
 slide_canvas = None
-
 if "has_stitched" not in st.session_state:
     st.session_state["has_stitched"] = False
 
@@ -164,7 +138,7 @@ if img_tl and img_bl and img_br and img_tr:
     col_img, col_ctrl = st.columns([2, 1])
 
     with col_ctrl:
-        st.subheader("⚙️ Resection (Fine-tune Offsets)")  
+        st.subheader("⚙️ Resction (Fine-tune Offsets)")  
         if st.button("Start", type="primary"):
             st.session_state["has_stitched"] = True
 
@@ -205,75 +179,114 @@ if img_tl and img_bl and img_br and img_tr:
             tps_strength = 0
 
     if st.session_state["has_stitched"]:
-        # 1. Load images and apply flips
+        # convert correctly flipped Tumor Map
         im1 = flip_image(img_tl, flip_tl_h, flip_tl_v)
         im2 = flip_image(img_bl, flip_bl_h, flip_bl_v)
         im3 = flip_image(img_tr, flip_tr_h, flip_tr_v)
         im4 = flip_image(img_br, flip_br_h, flip_br_v)
 
-        msk1 = get_mask(im1)
-        msk2 = get_mask(im2)
-        msk3 = get_mask(im3)
-        msk4 = get_mask(im4)
+        # get the corresponding mask
+        _, msk1 = cv2.threshold(get_majorTumor(get_mask(im1)), 1, 255, cv2.THRESH_BINARY)
+        _, msk2 = cv2.threshold(get_majorTumor(get_mask(im2)), 1, 255, cv2.THRESH_BINARY)
+        _, msk3 = cv2.threshold(get_majorTumor(get_mask(im3)), 1, 255, cv2.THRESH_BINARY)
+        _, msk4 = cv2.threshold(get_majorTumor(get_mask(im4)), 1, 255, cv2.THRESH_BINARY)
 
-        info_dict = {
-            1: {'map': im1, 'mask': msk1, 'dx': dx1, 'dy': dy1, 'da': da1},
-            2: {'map': im2, 'mask': msk2, 'dx': dx2, 'dy': dy2, 'da': da2},
-            3: {'map': im3, 'mask': msk3, 'dx': dx3, 'dy': dy3, 'da': da3},
-            4: {'map': im4, 'mask': msk4, 'dx': dx4, 'dy': dy4, 'da': da4},
+        # get the centroid
+        centroid1 = get_centroid(msk1)
+        centroid2 = get_centroid(msk2)
+        centroid3 = get_centroid(msk3)
+        centroid4 = get_centroid(msk4)
+
+        # get the bbox rect info
+        angle1, h1, w1 = get_rectInfo(msk1)
+        angle2, h2, w2 = get_rectInfo(msk2)
+        angle3, h3, w3 = get_rectInfo(msk3)
+        angle4, h4, w4 = get_rectInfo(msk4)
+
+        info_dict[1] = {
+            'mask': msk1,
+            'map': im1,
+            'centroid': centroid1,
+            'raw_angle':angle1,
+            'height':h1,
+            'width': w1
+        }
+        info_dict[2] = {
+            'mask': msk2,
+            'map': im2,
+            'centroid': centroid2,
+            'raw_angle':angle2,
+            'height':h2,
+            'width': w2
+        }
+        info_dict[3] = {
+            'mask': msk3,
+            'map': im3,
+            'centroid': centroid3,
+            'raw_angle':angle3,
+            'height':h3,
+            'width': w3
+        }
+        info_dict[4] = {
+            'mask': msk4,
+            'map': im4,
+            'centroid': centroid4,
+            'raw_angle':angle4,
+            'height':h4,
+            'width': w4
+        }
+        if not all(pos in info_dict for pos in required_pos):
+            print("Error: missing img info, stitching failed!")
+
+        any_pos = required_pos[0]
+        h, w = info_dict[any_pos]['mask'].shape[:2]
+        slide_canvas = np.zeros((int(h*4), int(w*4), 3), dtype=np.uint8)
+
+        canvas_center_x = slide_canvas.shape[1] // 2
+        canvas_center_y = slide_canvas.shape[0] // 2
+
+        gap_factor = 1.0
+
+        left_height = (info_dict[1]['height']+ info_dict[1]['height'])/2
+        right_height = (info_dict[2]['height']+ info_dict[2]['height'])/2
+
+        top_width = (info_dict[3]['width']+ info_dict[3]['width'])/2
+        bottom_width = (info_dict[4]['width']+ info_dict[4]['width'])/2
+
+        offset_x_left = int((left_height / 2.0) * gap_factor)
+        offset_x_right = int((right_height / 2.0) * gap_factor)
+        offset_y_top = int((top_width / 2.0) * gap_factor)
+        offset_y_bottom = int((bottom_width / 2.0) * gap_factor)
+
+        quadrant_targets = {
+            1: (canvas_center_x - offset_x_left + dx1, canvas_center_y - offset_y_top + dy1),
+            2: (canvas_center_x - offset_x_left + dx2, canvas_center_y + offset_y_bottom + dy2),
+            3: (canvas_center_x + offset_x_right + dx3, canvas_center_y - offset_y_top + dy3),
+            4: (canvas_center_x + offset_x_right + dx4, canvas_center_y + offset_y_bottom + dy4)
         }
 
-        # 2. Main canvas setup
-        max_h = max(im.shape[0] for im in [im1, im2, im3, im4])
-        max_w = max(im.shape[1] for im in [im1, im2, im3, im4])
-        slide_canvas = np.zeros((max_h * 3, max_w * 3, 3), dtype=np.uint8)
-
-        canvas_cx = slide_canvas.shape[1] // 2
-        canvas_cy = slide_canvas.shape[0] // 2
-
-        # 3. Rotate using single expanded canvas to avoid image clipping, then perform inner corner alignment
+        delta_angles = {1:da1, 2:da2, 3:da3, 4:da4}
         for pos in required_pos:
-            item = info_dict[pos]
-            map_img = item['map']
-            msk = item['mask']
-            
-            img_h, img_w = map_img.shape[:2]
-            
-            # Create a padded temporary canvas for single slice rotation to avoid clipping bounds
-            pad = max(img_h, img_w)
-            temp_h, temp_w = img_h + 2 * pad, img_w + 2 * pad
-            
-            temp_map = np.zeros((temp_h, temp_w, 3), dtype=np.uint8)
-            temp_mask = np.zeros((temp_h, temp_w), dtype=np.uint8)
-            
-            temp_map[pad:pad+img_h, pad:pad+img_w] = map_img
-            temp_mask[pad:pad+img_h, pad:pad+img_w] = msk
-            
-            # Center point of the padded slice
-            temp_cx, temp_cy = pad + img_w / 2.0, pad + img_h / 2.0
-            
-            # Perform rotation (Exact same logic as Version 1 without border cropping)
-            M_rot = cv2.getRotationMatrix2D((temp_cx, temp_cy), item['da'], 1.0)
-            
-            rotated_map = cv2.warpAffine(temp_map, M_rot, (temp_w, temp_h))
-            rotated_mask = cv2.warpAffine(temp_mask, M_rot, (temp_w, temp_h))
+            data = info_dict[pos]
+            msk = data['mask']
+            map = data['map']
+            centroid = data['centroid']
+            raw_angle = data['raw_angle']
 
-            # Extract the actual inner corner from the un-clipped rotated slice
-            corner_x, corner_y = get_inner_corner_offset(rotated_mask, pos)
+            target_angle = 90
+            rotation_needed = raw_angle + delta_angles[pos]
 
-            # Translate inner corner to main canvas center + slider offsets
-            M_trans = np.float32([
-                [1, 0, (canvas_cx - corner_x) + item['dx']],
-                [0, 1, (canvas_cy - corner_y) + item['dy']]
-            ])
+            M_rot = cv2.getRotationMatrix2D(centroid, rotation_needed, 1.0)
 
-            transformed_map = cv2.warpAffine(rotated_map, M_trans, (slide_canvas.shape[1], slide_canvas.shape[0]))
-            transformed_mask = cv2.warpAffine(rotated_mask, M_trans, (slide_canvas.shape[1], slide_canvas.shape[0]))
+            target_x, target_y = quadrant_targets[pos]
+            M_rot[0, 2] += (target_x - centroid[0])
+            M_rot[1, 2] += (target_y - centroid[1])
 
-            # Blend transformed slice into main canvas
+            transformed_map = cv2.warpAffine(map, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
+            transformed_mask = cv2.warpAffine(msk, M_rot, (slide_canvas.shape[1], slide_canvas.shape[0]))
+
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
 
-        # 4. TPS Warping
         if enable_tps:
             ch, cw = slide_canvas.shape[:2]
             cx, cy = cw // 2, ch // 2
@@ -293,7 +306,6 @@ if img_tl and img_bl and img_br and img_tr:
             
             slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
-        # 5. Export canvas to PNG byte stream for downloading
         result_img = Image.fromarray(slide_canvas)
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
@@ -312,6 +324,9 @@ if img_tl and img_bl and img_br and img_tr:
                 mime='image/png',
                 type='primary'
             )
+    else:
+        with col_img:
+            st.info("Please upload maps and click \'Start\'")
     else:
         with col_img:
             st.info("Please upload maps and click 'Start'")
