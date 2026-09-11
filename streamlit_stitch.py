@@ -144,6 +144,7 @@ if img_tl and img_bl and img_br and img_tr:
 
         if st.session_state["has_stitched"]:
             st.markdown("### 1. Coarse Rigid Fine-tune")
+            gap_factor = st.slider("Gap Factor", min_value=0.500, max_value=1.000, value=0.950, step=0.001, key="gap_f")
             adj_col1, adj_col2 = st.columns(2)
             with adj_col1:
                 st.markdown("**TopLeft**")
@@ -175,6 +176,7 @@ if img_tl and img_bl and img_br and img_tr:
             dx2 = dy2 = da2 = 0
             dx3 = dy3 = da3 = 0
             dx4 = dy4 = da4 = 0
+            gap_factor = 0.95
             enable_tps = False
             tps_strength = 0
 
