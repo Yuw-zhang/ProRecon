@@ -317,11 +317,15 @@ if img_tl and img_bl and img_br and img_tr:
             st.subheader("Reconstructed specimen")
             st.image(slide_canvas, caption="", use_container_width=True)
             
+            custom_filename = st.text_input("Saved Filename", value="reconstructed")
+            if not custom_filename.endswith(".png"):
+                custom_filename += ".png"
+                
             # Download PNG Button
             st.download_button(
                 label='Download PNG',
                 data=byte_im,
-                file_name='reconstructed.png',
+                file_name=custom_filename,
                 mime='image/png',
                 type='primary'
             )
