@@ -72,18 +72,6 @@ def get_rectInfo(msk):
 
     return raw_angle, length, width
 
-def apply_tps_transform(image, src_points, dst_points):
-    if len(src_points) < 4:
-        return image
-    
-    src_pts = np.array([src_points], dtype=np.float32)
-    dst_pts = np.array([dst_points], dtype=np.float32)
-    matches = [cv2.DMatch(i, i, 0) for i in range(len(src_points))]
-
-    tps = cv2.createThinPlateSplineShapeTransformer()
-    tps.estimateTransformation(dst_pts, src_pts, matches)
-    return tps.warpImage(image)
-
 def reset_stitch_state():
     st.session_state["has_stitched"] = False 
     
@@ -167,18 +155,12 @@ if img_tl and img_bl and img_br and img_tr:
                 dy4 = st.slider("Vertical (Y)", -100, 100, 0, key="dy4")
                 da4 = st.slider("Angle (°)", -180, 180, 0, key="da4")
 
-            st.markdown("---")
-            st.markdown("### 2. TPS Non-Rigid Warping")
-            enable_tps = st.checkbox("Enable TPS Boundary Stitching", value=False)
-            tps_strength = st.slider("Stitching Tension Strength", -50, 50, 0, key="tps_s")
         else:
             dx1 = dy1 = da1 = 0
             dx2 = dy2 = da2 = 0
             dx3 = dy3 = da3 = 0
             dx4 = dy4 = da4 = 0
             gap_factor = 0.95
-            enable_tps = False
-            tps_strength = 0
 
     if st.session_state["has_stitched"]:
         # convert correctly flipped Tumor Map
@@ -288,24 +270,6 @@ if img_tl and img_bl and img_br and img_tr:
 
             slide_canvas[transformed_mask > 0] = transformed_map[transformed_mask > 0]
 
-        if enable_tps:
-            ch, cw = slide_canvas.shape[:2]
-            cx, cy = cw // 2, ch // 2
-
-            src_pts = [
-                [0, 0], [cw, 0], [0, ch], [cw, ch],             
-                [cx, cy - 100], [cx, cy + 100], [cx - 100, cy], [cx + 100, cy] 
-            ]
-            
-            dst_pts = [
-                [0, 0], [cw, 0], [0, ch], [cw, ch],
-                [cx, cy - 100 + tps_strength], 
-                [cx, cy + 100 - tps_strength], 
-                [cx - 100 + tps_strength, cy], 
-                [cx + 100 - tps_strength, cy]
-            ]
-            
-            slide_canvas = apply_tps_transform(slide_canvas, src_pts, dst_pts)
 
         result_img = Image.fromarray(slide_canvas)
         buf = io.BytesIO()
