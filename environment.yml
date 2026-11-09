@@ -10,4 +10,4 @@ dependencies:
   - pip
   - pip:
     - streamlit
-    - opencv-contrib-python
+    - opencv-contrib-python-headless
