@@ -419,6 +419,3 @@ if img_tl and img_bl and img_br and img_tr:
     else:
         with col_img:
             st.info("Please upload maps and click \'Start\'")
-    else:
-        with col_img:
-            st.info("Please upload maps and click \'Start\'")
